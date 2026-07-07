@@ -3,6 +3,7 @@ experiments/
 archive/
 runs_dev/
 poster_figures/
+runs/_grid_cache
 
 
 # Byte-compiled / optimized / DLL files
@@ -212,4 +213,5 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+.DS_Store
 .DS_Store
