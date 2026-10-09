@@ -215,3 +215,8 @@ marimo/_lsp/
 __marimo__/
 .DS_Store
 .DS_Store
+
+# Generated outputs and external benchmark data
+runs/
+analysis/
+benchmark_sources/
