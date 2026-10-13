@@ -220,3 +220,6 @@ __marimo__/
 runs/
 analysis/
 benchmark_sources/
+
+# Local files prepared for manual Zenodo upload
+/zenodo/
