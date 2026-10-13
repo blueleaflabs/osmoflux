@@ -29,31 +29,19 @@ class ReleaseTests(unittest.TestCase):
         (self.out / 'INPUT_MANIFEST.json').write_bytes(b.encoded({'run_id': 'test_run', 'inputs_sha256': inputs,
             'input_set_sha256': hashlib.sha256(b.encoded(inputs)).hexdigest(), 'analysis_code_sha256': code_hash}))
         (self.out / 'VERIFICATION.json').write_bytes(b.encoded({'run_id': 'test_run', 'status': 'ANALYSIS_COMPLETE', 'paper_regression': 'NOT_RUN'}))
-        self.papers = []
-        for kind, count in [('article', 3), ('appendix', 1)]:
-            name = f'archive/paper/{kind}.docx'
-            self.papers.append(name)
-            p = self.root / name
-            p.parent.mkdir(parents=True, exist_ok=True)
-            images = []
-            rels = []
-            with zipfile.ZipFile(p, 'w') as z:
-                for i in range(1, count + 1):
-                    stem = f'FigS{i}' if kind == 'appendix' else f'Fig{i:02}'
-                    data = f'image fixture {stem}'.encode()
-                    (self.out / f'figures/{stem}_fixture.png').write_bytes(data)
-                    z.writestr(f'word/media/{stem}.png', data)
-                    images.append(f'<a:blip r:embed="rId{i}"/>')
-                    rels.append(f'<Relationship Id="rId{i}" Target="media/{stem}.png"/>')
-                z.writestr('word/document.xml', '<root xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' + ''.join(images) + '</root>')
-                z.writestr('word/_rels/document.xml.rels', '<Relationships>' + ''.join(rels) + '</Relationships>')
+        figures = [f'figures/Fig{i:02}_fixture.png' for i in range(1, 4)] + ['figures/FigS1_fixture.png']
+        for figure in figures:
+            (self.out / figure).write_bytes(('image fixture ' + figure).encode())
+        # Paper files exist locally, but must not be read or packaged.
+        paper = self.root / 'archive/paper/private.docx'
+        paper.parent.mkdir(parents=True)
+        paper.write_bytes(b'private manuscript')
         self.config_path = 'release-test.json'
-        self.config = {'schema': 'osmoflux-release-config-1',
+        self.config = {'schema': 'osmoflux-release-config-2', 'deposit_scope': 'data-and-code',
             'code_files': ['README.md', 'OsmoFlux_analysis.ipynb', 'simulate.ipynb', 'requirements.txt'],
             'reproduction': {'python': '3.12', 'analysis_notebook': 'OsmoFlux_analysis.ipynb',
                             'simulation_notebook': 'simulate.ipynb', 'requirements': 'requirements.txt'},
-            'papers': [{'path': self.papers[0], 'figures': [f'figures/Fig{i:02}_fixture.png' for i in range(1,4)]},
-                       {'path': self.papers[1], 'figures': ['figures/FigS1_fixture.png']}]}
+            'required_figures': figures}
         (self.root / self.config_path).write_bytes(b.encoded(self.config))
         outputs = {p.relative_to(self.out).as_posix(): b.digest(p) for p in self.out.rglob('*') if p.is_file()}
         (self.out / 'OUTPUT_MANIFEST.json').write_bytes(b.encoded({'files_sha256': outputs}))
@@ -70,18 +58,23 @@ class ReleaseTests(unittest.TestCase):
 
     def test_end_to_end_identical_builds_and_reproduction_paths(self):
         p, h = self.proposal()
-        for dest in ['upload1', 'upload2']:
-            b.build(self.root, p, h, Path(self.temp.name) / dest)
-        a = Path(self.temp.name) / 'upload1'
-        c = Path(self.temp.name) / 'upload2'
+        b.build(self.root, p, h)
+        a = self.run / 'release/first-build'
+        (self.run / 'zenodo').rename(a)
+        # A prior package under release/ must not affect the next build.
+        b.build(self.root, p, h)
+        c = self.run / 'zenodo'
         self.assertEqual({p.name: b.digest(p) for p in a.iterdir()}, {p.name: b.digest(p) for p in c.iterdir()})
         self.assertIn('Python 3.12', (a / 'README.md').read_text())
+        self.assertEqual({p.name for p in c.iterdir()}, {'code.zip', 'run-data.zip', 'analysis.zip', 'README.md', 'release-manifest.json', 'SHA256SUMS.txt'})
+        with zipfile.ZipFile(c / 'run-data.zip') as z:
+            self.assertFalse(any('/zenodo/' in n or '/release/' in n or n.endswith('.docx') for n in z.namelist()))
         with zipfile.ZipFile(a / 'code.zip') as z:
             self.assertIn('osmoflux/release-test.json', z.namelist())
         with zipfile.ZipFile(a / 'run-data.zip') as z:
             self.assertIn('osmoflux/runs/REPRO/test_run/input.csv', z.namelist())
         with self.assertRaises(ValueError):
-            b.build(self.root, p, h, a)
+            b.build(self.root, p, h)
 
     def test_tamper_and_new_file_rejected(self):
         p, h = self.proposal()
@@ -108,21 +101,37 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Symlink'):
             b.inventory(self.root, 'test_run', self.config, self.config_path)
 
-    def test_dirty_checkout_and_old_figures_block_release(self):
+    def test_dirty_checkout_blocks_release(self):
         self.git['working_tree_changes'] = [' M README.md']
-        # A valid DOCX containing one outdated image is still not release-ready.
-        paper = self.root / self.papers[0]
-        with zipfile.ZipFile(paper) as z:
-            entries = {n: z.read(n) for n in z.namelist()}
-        entries['word/media/Fig01.png'] = b'old image'
-        with zipfile.ZipFile(paper, 'w') as z:
-            for n, data in entries.items():
-                z.writestr(n, data)
         p, h = self.proposal()
         m = b.load_manifest(p, h)
-        self.assertEqual(len(m['release_blockers']), 2)
+        self.assertEqual(len(m['release_blockers']), 1)
         with self.assertRaisesRegex(ValueError, 'not release-ready'):
             b.verify(self.root, m)
+
+    def test_papers_not_required_or_included(self):
+        p, h = self.proposal()
+        m = b.load_manifest(p, h)
+        self.assertFalse(any(r['path'].endswith('.docx') or r['group'] == 'paper' for r in m['files']))
+        (self.root / 'archive/paper/private.docx').unlink()
+        b.verify(self.root, m)
+
+    def test_upload_folder_never_changes_inventory(self):
+        before = b.inventory(self.root, 'test_run', self.config, self.config_path)
+        (self.run / 'zenodo').mkdir()
+        (self.run / 'zenodo/old.zip').write_bytes(b'old upload')
+        self.assertEqual(before, b.inventory(self.root, 'test_run', self.config, self.config_path))
+
+    def test_code_list_cannot_include_manuscript(self):
+        self.config['code_files'].append('archive/paper/private.docx')
+        (self.root / self.config_path).write_bytes(b.encoded(self.config))
+        with self.assertRaisesRegex(ValueError, 'paper documents'):
+            b.load_config(self.root, self.config_path)
+
+    def test_missing_required_figure_rejected(self):
+        (self.out / self.config['required_figures'][0]).unlink()
+        with self.assertRaisesRegex(ValueError, 'Missing required figure'):
+            b.figure_checks(self.root, 'test_run', self.config)
 
     def test_changed_configuration_is_rejected(self):
         p, h = self.proposal()

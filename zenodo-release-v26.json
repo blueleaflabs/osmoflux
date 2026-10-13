@@ -1,5 +1,5 @@
 {
-  "schema": "osmoflux-release-config-1",
+  "schema": "osmoflux-release-config-2",
   "code_files": [
     ".gitignore",
     "LICENSE",
@@ -17,28 +17,19 @@
     "simulation_notebook": "OsmoFlux_reproducibility.ipynb",
     "requirements": "requirements-analysis.lock.txt"
   },
-  "papers": [
-    {
-      "path": "archive/paper/OsmoFlux_REINENG_manuscript_v26.docx",
-      "figures": [
-        "figures/Fig01_routing.png",
-        "figures/Fig02_duty_progression.png",
-        "figures/Fig03_operating_trade.png",
-        "figures/Fig04_transport_and_supply.png",
-        "figures/Fig05_resource_levers.png",
-        "figures/Fig06_module_hydraulics.png",
-        "figures/Fig07_sizing_map.png",
-        "figures/Fig08_economic_boundary.png",
-        "figures/Fig09_morris.png",
-        "figures/Fig10_benchmark.png"
-      ]
-    },
-    {
-      "path": "archive/paper/OsmoFlux_REINENG_supplement_v26.docx",
-      "figures": [
-        "figures/FigS1_local_law.png",
-        "figures/FigS2_fouling_ranking.png"
-      ]
-    }
+  "deposit_scope": "data-and-code",
+  "required_figures": [
+    "figures/Fig01_routing.png",
+    "figures/Fig02_duty_progression.png",
+    "figures/Fig03_operating_trade.png",
+    "figures/Fig04_transport_and_supply.png",
+    "figures/Fig05_resource_levers.png",
+    "figures/Fig06_module_hydraulics.png",
+    "figures/Fig07_sizing_map.png",
+    "figures/Fig08_economic_boundary.png",
+    "figures/Fig09_morris.png",
+    "figures/Fig10_benchmark.png",
+    "figures/FigS1_local_law.png",
+    "figures/FigS2_fouling_ranking.png"
   ]
 }

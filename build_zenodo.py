@@ -8,13 +8,12 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import zipfile
-import xml.etree.ElementTree as ET
 
-SCHEMA = 'osmoflux-release-2'
-GROUPS = ('code', 'run-data', 'analysis', 'paper')
+SCHEMA = 'osmoflux-release-3'
+GROUPS = ('code', 'run-data', 'analysis')
+RESERVED_RUN_DIRS = {'release', 'zenodo'}
 EXCLUDED_NAMES = {'.DS_Store', '.ipynb_checkpoints', '__pycache__'}
 
 
@@ -46,35 +45,30 @@ def safe_path(root, relative):
 
 def load_config(root, relative):
     config = json.loads(safe_path(root, relative).read_text())
-    if config.get('schema') != 'osmoflux-release-config-1':
+    if config.get('schema') != 'osmoflux-release-config-2':
         raise ValueError('Unsupported release configuration schema.')
+    if config.get('deposit_scope') != 'data-and-code' or 'papers' in config:
+        raise ValueError('Configuration must describe a data-and-code deposit without papers.')
     code = config['code_files']
     if not code or len(set(code)) != len(code):
         raise ValueError('Code files must be a nonempty, unique list.')
     for name in code:
         safe_path(root, name)
+        if name.startswith(('archive/', 'runs/', 'runs_dev/')) or Path(name).suffix.lower() in {'.docx', '.doc', '.pdf'}:
+            raise ValueError('Code inventory cannot include archives, run files or paper documents.')
     reproduction = config['reproduction']
     for key in ['analysis_notebook', 'simulation_notebook', 'requirements']:
         if reproduction[key] not in code:
             raise ValueError(f'Reproduction file missing from code_files: {key}')
     if not re.fullmatch(r'\d+\.\d+(?:\.\d+)?', reproduction['python']):
         raise ValueError('Python version must be major.minor or major.minor.patch.')
-    papers = config['papers']
-    names = [p['path'] for p in papers]
-    if not papers or len(names) != len(set(names)) or set(names) & set(code):
-        raise ValueError('Paper paths must be nonempty, unique and separate from code.')
-    for paper in papers:
-        safe_path(root, paper['path'])
-        if not paper['path'].endswith('.docx'):
-            raise ValueError('Figure verification requires DOCX papers.')
-        if len(set(paper['figures'])) != len(paper['figures']):
-            raise ValueError('Duplicate figure mapping.')
-        for figure in paper['figures']:
-            safe_path(root, figure)
-            if not figure.startswith('figures/') or not figure.endswith('.png'):
-                raise ValueError('Figures must be explicit PNG paths under figures/.')
-    if relative in names:
-        raise ValueError('Configuration cannot also be a paper.')
+    figures = config['required_figures']
+    if not figures or len(set(figures)) != len(figures):
+        raise ValueError('Required figures must be a nonempty, unique list.')
+    for figure in figures:
+        safe_path(root, figure)
+        if not figure.startswith('figures/') or not figure.endswith('.png'):
+            raise ValueError('Figures must be explicit PNG paths under figures/.')
     return config
 
 
@@ -97,18 +91,13 @@ def provenance(root):
 def inventory(root, run_id, config, config_path):
     """Full selected run, with generated analysis separated; no other runs or caches."""
     result = {name: 'code' for name in [*config['code_files'], config_path]}
-    for paper in config['papers']:
-        name = paper['path']
-        if name in result:
-            raise ValueError('Paper and code paths overlap.')
-        result[name] = 'paper'
     base = safe_path(root, run_path(run_id))
     if not base.is_dir():
         raise ValueError(f'Missing run: {base}')
     for directory, dirs, files in os.walk(base, followlinks=False):
         here = Path(directory)
-        # release/ is reserved for the user-approved manifest, not scientific input.
-        dirs[:] = sorted(d for d in dirs if d not in EXCLUDED_NAMES and not (here == base and d == 'release'))
+        # Approval records and upload archives are outputs, never scientific inputs.
+        dirs[:] = sorted(d for d in dirs if d not in EXCLUDED_NAMES and not (here == base and d in RESERVED_RUN_DIRS))
         for d in dirs:
             if (here / d).is_symlink():
                 raise ValueError(f'Symlink in run: {here / d}')
@@ -116,6 +105,8 @@ def inventory(root, run_id, config, config_path):
             if name in EXCLUDED_NAMES:
                 continue
             p = here / name
+            if p.suffix.lower() in {'.docx', '.doc'}:
+                raise ValueError(f'Unexpected document in data inventory: {p}')
             rel = p.relative_to(root).as_posix()
             safe_path(root, rel)
             result[rel] = 'analysis' if p.relative_to(base).parts[0] == 'derived_analysis' else 'run-data'
@@ -131,7 +122,7 @@ def analysis_checks(root, run_id, config):
         raise ValueError('Analysis is incomplete or belongs to another run.')
     for rel, expected in im['inputs_sha256'].items():
         p = safe_path(root, rel)
-        if not p.is_relative_to(safe_path(root, run_path(run_id))) or p.is_relative_to(base):
+        if not p.is_relative_to(safe_path(root, run_path(run_id))) or p.is_relative_to(base) or any(p.is_relative_to(base.parent / d) for d in RESERVED_RUN_DIRS):
             raise ValueError(f'Unexpected analysis input: {rel}')
         if digest(p) != expected:
             raise ValueError(f'Analysis input changed: {rel}')
@@ -148,26 +139,14 @@ def analysis_checks(root, run_id, config):
 
 
 def figure_checks(root, run_id, config):
-    """Exact embedded asset check; formatting-equivalent old images still need replacing."""
-    ns = {'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
-          'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
-    figures = safe_path(root, run_path(run_id)) / 'derived_analysis/figures'
+    """Require analysis exports; paper documents are not release inputs."""
+    base = safe_path(root, run_path(run_id)) / 'derived_analysis'
     rows = []
-    for paper in config['papers']:
-        name = paper['path']
-        with zipfile.ZipFile(safe_path(root, name)) as z:
-            document = ET.fromstring(z.read('word/document.xml'))
-            rels = {r.attrib['Id']: r.attrib['Target'] for r in ET.fromstring(z.read('word/_rels/document.xml.rels'))}
-            images = document.findall('.//a:blip', ns)
-            expected_count = len(paper['figures'])
-            if len(images) != expected_count:
-                rows.append({'paper': name, 'problem': f'Expected {expected_count} figures; found {len(images)}'})
-            for image, relative in zip(images, paper['figures']):
-                generated = safe_path(figures.parent, relative)
-                target = rels[image.attrib['{' + ns['r'] + '}embed']]
-                raw = z.read('word/' + target)
-                rows.append({'paper': name, 'figure': relative,
-                             'exact_match': generated.is_file() and hashlib.sha256(raw).hexdigest() == digest(generated)})
+    for relative in config['required_figures']:
+        p = safe_path(base, relative)
+        if not p.is_file() or not p.stat().st_size:
+            raise ValueError(f'Missing required figure: {relative}')
+        rows.append({'figure': relative, 'sha256': digest(p)})
     return rows
 
 
@@ -188,11 +167,9 @@ def propose(root, run_id, config_path, destination):
     blockers = []
     if g['working_tree_changes']:
         blockers.append('Commit the intended code changes, then generate a fresh proposal from a clean checkout.')
-    if any(not r.get('exact_match', False) for r in figures):
-        blockers.append('Replace the paper’s embedded figures with the verified notebook exports, then generate a fresh proposal.')
     manifest = {'schema': SCHEMA, 'run_id': run_id, 'git': g, 'analysis': analyses,
                 'configuration': {'path': config_path, 'sha256': digest(safe_path(root, config_path)), 'content': config}, 'files': records, 'figure_checks': figures, 'release_blockers': blockers,
-                'exclusions': ['Other runs and _grid_cache', 'Selected run release/ (reserved for approval record)',
+                'exclusions': ['Other runs and _grid_cache', 'Selected run release/ and zenodo/ (approval records and package outputs)', 'Manuscript and supplement documents',
                                '.DS_Store, .ipynb_checkpoints, __pycache__'],
                 'archive_format': 'ZIP_STORED; sorted paths; fixed 1980 timestamp; regular files mode 0644'}
     destination.mkdir(parents=True)
@@ -247,7 +224,7 @@ def verify(root, m):
     if analysis_checks(root, m['run_id'], config) != m['analysis']:
         raise ValueError('Analysis provenance differs.')
     if figure_checks(root, m['run_id'], config) != m['figure_checks']:
-        raise ValueError('Embedded figures differ.')
+        raise ValueError('Required analysis figures differ.')
 
 
 def write_archive(root, records, destination):
@@ -265,13 +242,16 @@ def write_archive(root, records, destination):
                 raise ValueError(f'File changed during archive creation: {r["path"]}')
 
 
-def build(root, manifest_path, expected, destination):
+def build(root, manifest_path, expected):
     m = load_manifest(manifest_path, expected)
     verify(root, m)
+    base = safe_path(root, run_path(m['run_id']))
+    destination = safe_path(root, run_path(m['run_id']) + '/zenodo')
+    release = safe_path(root, run_path(m['run_id']) + '/release')
     if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
         raise ValueError('Upload directory must be absent or empty; existing packages are never overwritten.')
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='.zenodo-build-', dir=destination.parent) as temp:
+    release.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.zenodo-build-', dir=release) as temp:
         stage = Path(temp)
         for group in GROUPS:
             write_archive(root, [r for r in m['files'] if r['group'] == group], stage / (group + '.zip'))
@@ -287,7 +267,7 @@ Release manifest SHA-256: {expected}
 ## Reproduce the figures
 
 1. Verify SHA256SUMS.txt against the downloaded files.
-2. Extract code.zip, run-data.zip, analysis.zip and paper.zip into the same directory.
+2. Extract code.zip, run-data.zip and analysis.zip into the same directory.
    All archives share an osmoflux/ root; retain their relative paths.
 3. Create a Python {reproduction['python']} environment and install {reproduction['requirements']}.
 4. In osmoflux/, open {reproduction['analysis_notebook']}, select that environment,
@@ -301,7 +281,9 @@ The analysis reads saved simulation results; it does not rerun simulations.
 See the project README before launching a fresh simulation run.
 
 The manifest hashes every included file. Original inputs, generated analysis,
-code and papers are separate groups. Historical absolute paths inside simulation
+and code are separate groups. Manuscript and supplement documents are excluded.
+This data/code deposit has its own DOI; link it to the separate journal article
+DOI when available. The manuscript is not needed to reproduce the analysis. Historical absolute paths inside simulation
 receipts remain provenance; the analysis discovers its project root at runtime.
 The MIT license applies to code; consult source attribution for benchmark data.
 This package does not imply a reserved or published Zenodo DOI.
@@ -332,8 +314,6 @@ def main():
         p = sub.add_parser(name)
         p.add_argument('--manifest', type=Path, required=True)
         p.add_argument('--manifest-sha256', required=True)
-        if name == 'build':
-            p.add_argument('--out', type=Path, help='Absent/empty upload directory; default PROJECT/zenodo.')
     a = parser.parse_args()
     root = a.project.resolve()
     try:
@@ -345,10 +325,7 @@ def main():
         elif a.command == 'verify':
             verify(root, load_manifest(a.manifest, a.manifest_sha256)); print('All release files verified.')
         else:
-            destination = (a.out or root / 'zenodo').resolve()
-            if destination == root or destination.is_relative_to(root / 'runs'):
-                raise ValueError('Upload directory cannot be the project or inside runs/.')
-            build(root, a.manifest, a.manifest_sha256, destination)
+            build(root, a.manifest, a.manifest_sha256)
     except (ValueError, OSError, KeyError, subprocess.CalledProcessError, zipfile.BadZipFile) as e:
         parser.exit(1, f'ERROR: {e}\n')
 

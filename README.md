@@ -10,7 +10,7 @@ Run from the project folder or a subfolder. All paths are relative to the discov
 
 Outputs go to `runs/REPRO/<RUN_ID>/derived_analysis/`, derived from the same `RUN_ID` that selects the source data. Missing output folders are created by the notebook. The existing uppercase `ANALYSIS/` contains original run results and must be retained. Only `derived_analysis/` is writable; it is excluded from source-input hashing. Original simulation files remain read-only. After updating the notebook, restart the kernel before running all cells. `COVERAGE.json` maps the manuscript figures and tables to outputs. `VERIFICATION.json` records analysis completion and whether the optional v26 regression test was run; `INPUT_MANIFEST.json` records relative input paths and SHA-256 hashes; `OUTPUT_MANIFEST.json` records output hashes. Run data supplies all plotted values and result annotations. Historical authored paper tables and manuscript-value comparisons are optional regression-test material, disabled by default. Enable `RUN_V26_REGRESSION` in the configuration cell (or `OSMOFLUX_V26_REGRESSION=1`) to compare against v26. Test expectations never supply plotted values. The gallery displays the regenerated figures in manuscript order. The former project-level `analysis/v26/` output folder is no longer used; it can be deleted independently of the saved run data.
 
-`requirements-analysis.lock.txt` records the tested Python 3.11 analysis/kernel dependencies. To recreate the environment, install those requirements and register its Jupyter kernel as `blueleaflabs`. The notebook's original source run is read-only. `analysis/`, backup files under `archive/`, and the planned local `zenodo/` upload folder are ignored by Git. These analysis manifests are not a selected Zenodo release: the release identity and full-run package will be agreed separately before publication.
+`requirements-analysis.lock.txt` records the tested Python 3.11 analysis/kernel dependencies. To recreate the environment, install those requirements and register its Jupyter kernel as `blueleaflabs`. The notebook's original source run is read-only. `analysis/`, backup files under `archive/`, and the run-local `runs/REPRO/<RUN_ID>/zenodo/` upload folder are ignored by Git. These analysis manifests are not a selected Zenodo release: the release identity and full-run package will be agreed separately before publication.
 
 ## Rerun the simulations
 
@@ -37,84 +37,91 @@ These are model predictions, not plant validation. The transport model is NaCl-e
 
 The [MIT license](LICENSE) applies to the code.
 
-## Prepare a manual Zenodo release
+## Prepare a manual Zenodo data-and-code release
 
 `build_zenodo.py` is a standalone Python 3.11 script using only the standard library.
-It never uploads, commits, pushes, freezes a manifest, or modifies source data. The
-analysis notebook remains the analysis entry point; packaging is an explicit step.
-The script, `test_build_zenodo.py`, and `zenodo-release-v26.json` are intended for Git. Proposals stay under the
-ignored `archive/zenodo_review/`; final upload files go under ignored `zenodo/`.
+It never uploads, commits, pushes, approves a manifest, or modifies source data.
+The script, `test_build_zenodo.py`, and `zenodo-release-v26.json` belong in Git.
+Run data, proposals, approved manifests and upload archives remain ignored.
+
+The deposit contains saved run data, reproducibility code, generated figures and
+tables, instructions and checksums. The manuscript and supplementary document are
+excluded; they go through the journal separately. The data/code deposit receives
+its own DOI, linked to the journal article DOI when available. Packaging does not
+read or require the paper documents, so revising the paper does not change this
+deposit unless the data, code or generated analysis also changes.
 
 ### 1. Propose an inventory
 
-From the project folder, after completing the analysis:
+From the project folder after completing the analysis:
 
 ```sh
 python build_zenodo.py propose \
   --run-id final_submission_20261004_02 \
   --config zenodo-release-v26.json \
-  --out archive/zenodo_review/proposal-02
+  --out archive/zenodo_review/proposal-03
 ```
 
-Use a new proposal directory each time. Read `REVIEW.md`. `proposal-01` was an
-initial schema-1 draft and is superseded by this configuration-driven workflow;
-do not approve or build it.
+Use a new proposal directory each time. Read `REVIEW.md`. Proposals 01 and 02 used
+the superseded paper-inclusive scope and must not be used for the new deposit.
+The older approved fingerprint remains a historical record, not approval for this
+new scope. The current builder rejects those earlier manifest schemas.
 
-`zenodo-release-v26.json` declares the code files, document paths, ordered figure
-filenames for each document, notebook names, requirements file and Python version.
-Figure counts come from those lists; document roles are not guessed from filenames.
-The configuration itself is automatically included in the code archive and its
-content and hash are recorded in the manifest. Changing it after approval blocks
-the build. A future paper version gets its own configuration; no packaging-code
-change is needed. The run ID remains an explicit argument, and the Git commit and
-file hashes are discovered rather than written into the configuration.
- The manifest includes
-all files in this selected run, including original uppercase `ANALYSIS/`, frozen
-launcher source, and `benchmark_observations/`. Generated `derived_analysis/`
-files form a separate archive group. Other runs, `_grid_cache`, OS/cache files,
-and the reserved `runs/REPRO/<RUN_ID>/release/` approval directory are excluded.
-The inventory checks the analysis input/output hashes and executed notebook code.
-It also checks that the manuscript and supplement embed the exact generated PNGs.
+The configuration declares code files, required generated figures, notebook names,
+requirements file and Python version. It does not select a run, Git commit or hash;
+those are explicit command inputs or discovered provenance. The configuration is
+included in the code archive and pinned by the release manifest.
+
+The manifest includes the selected run's saved results, original uppercase
+`ANALYSIS/`, frozen launcher source and `benchmark_observations/`. Generated
+`derived_analysis/` files form a separate archive group. It checks the recorded
+analysis input/output hashes, executed notebook code and required figures.
+
+The selected run's `release/` and `zenodo/` folders are excluded from input hashing
+and recursive file discovery. Other runs, `_grid_cache`, and OS/cache files are
+also excluded. Build staging is inside `release/`, so prior packages and temporary
+archives cannot enter a later package or change its source fingerprint.
 
 ### 2. Agree on and save the release identity
 
-Before approving a manifest, synchronize the paper images, finalize and commit the
-intended code changes, then generate a fresh proposal from a clean checkout. The
-script records the local Git commit and origin; confirming that commit is pushed
-to GitHub remains a separate release step. A dirty-checkout proposal is useful for
-review but is deliberately blocked from building a final package.
+Commit and push the intended code/configuration changes, then generate a fresh
+proposal from a clean checkout. The script records the local commit and origin;
+confirming that commit is pushed to GitHub is a separate release step. A proposal
+from a dirty checkout can be reviewed but cannot build a final package.
 
-After review, explicitly copy the approved proposed manifest into
-`runs/REPRO/<RUN_ID>/release/release-manifest.json` and save its SHA-256 alongside
-it. Copy it unchanged: editing any byte changes its fingerprint. The script has
-no implicit "latest run" selection and no automatic approval step.
+After reviewing the fresh proposal, explicitly save its manifest and fingerprint
+unchanged in `runs/REPRO/<RUN_ID>/release/`. Keep previous approval records as
+history rather than silently treating them as approval for the new scope. The
+manifest filename may be retained or renamed; pass the actual filename below.
 
-### 3. Verify and build from the approved manifest
+### 3. Verify and build
 
-Use the saved manifest path and its exact SHA-256 with these commands (replace
-`APPROVED_SHA256` with the agreed fingerprint):
+Replace `APPROVED_MANIFEST` with the saved manifest path and `APPROVED_SHA256` with
+its agreed fingerprint:
 
 ```sh
-python build_zenodo.py verify \
-  --manifest runs/REPRO/final_submission_20261004_02/release/release-manifest.json \
-  --manifest-sha256 APPROVED_SHA256
-python build_zenodo.py build \
-  --manifest runs/REPRO/final_submission_20261004_02/release/release-manifest.json \
-  --manifest-sha256 APPROVED_SHA256
+python build_zenodo.py verify --manifest APPROVED_MANIFEST --manifest-sha256 APPROVED_SHA256
+python build_zenodo.py build --manifest APPROVED_MANIFEST --manifest-sha256 APPROVED_SHA256
 ```
 
-A build rejects changed, missing, or newly added source files, a changed Git
-checkout, and an existing nonempty upload directory. It rechecks each file while
-archiving. `zenodo/` receives only seven upload files: `code.zip`, `run-data.zip`,
-`analysis.zip`, `paper.zip`, `README.md`, `release-manifest.json`, and
-`SHA256SUMS.txt`. All archives share the same `osmoflux/` extraction root.
-Archives use sorted entries, fixed metadata, and no compression so identical
-inputs produce identical bytes without depending on compression-library versions.
-Allow at least the total source size again as free disk space when building.
+The output location is always `runs/REPRO/<RUN_ID>/zenodo/`, derived from the
+approved manifest's run ID. There is no output override or project-level upload
+folder. The builder checks source hashes while archiving and rejects a changed
+checkout, added/removed files, or a nonempty destination.
 
-Upload those seven files manually to Zenodo. The DOI is handled separately after
-reservation/publication. Changing the paper later requires a new proposed release
-manifest and package; never edit files inside an already approved package.
+The folder contains exactly six upload files:
 
-Run the packaging checks with `python -m unittest test_build_zenodo.py`.
-These tests use small temporary fixtures, not the real run.
+- `code.zip`
+- `run-data.zip`
+- `analysis.zip`
+- `README.md`
+- `release-manifest.json`
+- `SHA256SUMS.txt`
+
+All three archives share an `osmoflux/` extraction root. Sorted entries, fixed
+metadata and uncompressed storage give identical bytes for identical inputs
+without relying on compression-library versions. Allow the total source size
+again as free disk space. Upload the six files manually; DOI handling is separate.
+
+Run `python -m unittest test_build_zenodo.py` for tests using temporary fixtures.
+The analysis notebook does not need rerunning after packaging-only changes.
